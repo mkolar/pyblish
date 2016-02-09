@@ -6,7 +6,14 @@ import pyblish.plugin
 import pyblish.logic
 
 from pyblish.vendor import mock
-from pyblish.vendor.nose.tools import *
+from nose.tools import (
+    with_setup,
+    assert_true,
+    assert_false,
+    assert_equal,
+    assert_equals,
+    assert_not_equals
+)
 from .lib import (
     teardown, FAMILY, HOST, setup_failing, setup_full,
     setup, setup_empty, setup_wildcard)
@@ -23,7 +30,7 @@ def test_publish_all(_):
     assert "ValidateInstances" in [p.__name__ for p in plugins]
     assert "ExtractInstances" in [p.__name__ for p in plugins]
 
-    context = pyblish.util.publish()
+    context = pyblish.util.publish_all()
     assert_equals(len(context), 1)
 
     for instance in context:
@@ -36,7 +43,7 @@ def test_publish_all(_):
 @with_setup(setup_full, teardown)
 def test_publish_all_no_context():
     """Not passing a context is fine"""
-    context = pyblish.util.publish()
+    context = pyblish.util.publish_all()
     assert_equals(len(context), 1)
 
     for instance in context:
@@ -122,7 +129,7 @@ def test_process():
 
     _disk = list()
 
-    class SelectInstance(pyblish.plugin.Selector):
+    class SelectInstance(pyblish.api.Selector):
         def process_context(self, context):
             instance = context.create_instance("MyInstance")
             instance.set_data("family", "MyFamily")
@@ -180,7 +187,7 @@ def test_inmemory_svec():
     _disk = list()
     _server = dict()
 
-    class SelectInstances(pyblish.plugin.Selector):
+    class SelectInstances(pyblish.api.Selector):
         def process_context(self, context):
             instance = context.create_instance(name="MyInstance")
             instance.set_data("family", "MyFamily")
@@ -278,7 +285,7 @@ def test_extraction_failure():
     instance = context.create_instance(name='test_instance')
 
     instance.add('test_PLY')
-    instance.set_data(lib.config['identifier'], value=True)
+    instance.set_data("publishable", value=True)
     instance.set_data('family', value=FAMILY)
 
     # Assuming validations pass
@@ -305,7 +312,7 @@ def test_selection_appends():
     instance = context.create_instance(name='MyInstance')
     instance.add('node1')
     instance.add('node2')
-    instance.set_data(lib.config['identifier'], value=True)
+    instance.set_data("publishable", value=True)
 
     assert len(context) == 1
 
@@ -354,7 +361,7 @@ def test_interface():
 def test_failing_context():
     """Context processing yields identical information to instances"""
 
-    class SelectFailure(pyblish.plugin.Selector):
+    class SelectFailure(pyblish.api.Selector):
         def process_context(self, context):
             assert False, "I was programmed to fail"
 
@@ -408,7 +415,7 @@ def test_order():
 
     order = {"#": "0"}
 
-    class SelectInstance(pyblish.plugin.Selector):
+    class SelectInstance(pyblish.api.Selector):
         def process_context(self, context):
             order["#"] += "1"
             instance = context.create_instance("MyInstance")
@@ -502,7 +509,7 @@ def test_instances_by_plugin():
         inst = ctx.create_instance(
             name='TestInstance{0}'.format(families.index(family) + 1))
 
-        inst.set_data(lib.config['identifier'], value=True)
+        inst.set_data("publishable", value=True)
         inst.set_data('family', value=family)
         inst.set_data('host', value='python')
 

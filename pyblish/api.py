@@ -29,14 +29,19 @@ from .plugin import (
 
     Asset,
     Plugin,
-    Selector,
     Validator,
     Extractor,
-    Conformer,
-    Integrator,  # Alias
-    Collector,  # Alias
-    Config as __Config,
+    Integrator,
+    Collector,
     discover,
+
+    ContextPlugin,
+    InstancePlugin,
+
+    CollectorOrder,
+    ValidatorOrder,
+    ExtractorOrder,
+    IntegratorOrder,
 
     register_host,
     registered_hosts,
@@ -67,7 +72,6 @@ from .plugin import (
 
     registered_paths,
     environment_paths,
-    configured_paths,
     current_host,
 )
 
@@ -75,7 +79,8 @@ from .lib import (
     log,
     time as __time,
     format_filename,
-    emit
+    emit,
+    main_package_path as __main_package_path
 )
 
 from .logic import (
@@ -101,10 +106,9 @@ from .error import (
 from .compat import (
     deregister_all,
     sort,
+    Selector,
+    Conformer,
 )
-
-
-config = __Config()
 
 
 def __init__():
@@ -118,12 +122,14 @@ def __init__():
     # Register default services
     register_service("time", __time)
     register_service("user", getpass.getuser())
-    register_service("config", config)
     register_service("context", None)
     register_service("instance", None)
 
     # Register default host
     register_host("python")
+
+    # Register default path
+    register_plugin_path("%s/plugins" % __main_package_path())
 
     # Register default test
     register_test(__default_test)
@@ -150,12 +156,19 @@ __all__ = [
     "Conformer",
     "Integrator",
 
+    "ContextPlugin",
+    "InstancePlugin",
+
+    "CollectorOrder",
+    "ValidatorOrder",
+    "ExtractorOrder",
+    "IntegratorOrder",
+
     # Plug-in utilities
     "discover",
 
     "plugin_paths",
     "registered_paths",
-    "configured_paths",
     "environment_paths",
 
     "register_host",
@@ -196,8 +209,6 @@ __all__ = [
     "current_host",
     "sort_plugins",
 
-    # Configuration
-    "config",
     "version",
 
     # Utilities

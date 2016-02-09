@@ -1,9 +1,15 @@
 
 # Local library
-from . import lib
+from .. import lib
 import pyblish.plugin
 import pyblish.logic
-from pyblish.vendor.nose.tools import *
+from nose.tools import (
+    with_setup,
+    assert_equals,
+    assert_raises,
+    assert_true,
+    assert_false
+)
 
 
 @with_setup(lib.setup_empty, lib.teardown)
@@ -284,7 +290,7 @@ def test_when_to_trigger_process():
 def test_default_services():
     """Default services are operational"""
 
-    services = ["user", "time", "config"]
+    services = ["user", "time"]
     for service in services:
         assert_true(service in pyblish.api.registered_services())
 
@@ -295,10 +301,6 @@ def test_default_services():
     # time is passed by reference, and is callable, as it changes
     time = pyblish.api.registered_services()["time"]
     time()
-
-    # config is the global configuration
-    config = pyblish.api.registered_services()["config"]
-    assert_equals(config, pyblish.api.config)
 
 
 def test_asset():

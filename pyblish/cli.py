@@ -4,12 +4,9 @@ Usage:
     $ pyblish --help
 
 Attributes:
-    CONFIG_PATH: Default location of pyblsh-configuration
-    DATA_PATH: Default location of user-data for the cli.
     SCREEN_WIDTH: Used in right-aligned printed elements.
     TAB: Default tab-width.
     LOG_LEVEL: Mapping between cli flags and logging flags.
-
     intro_message: Message displayed during each command.
 
 Note:
@@ -21,6 +18,7 @@ Note:
 
 import os
 import time
+import json
 import logging
 
 import pyblish.api
@@ -29,15 +27,35 @@ import pyblish.util
 import pyblish.plugin
 import pyblish.version
 
-from pyblish.vendor import yaml
 from pyblish.vendor import click
 
-# Current Click context
 _ctx = None
-
-with open(os.path.join(os.path.dirname(__file__), "_help.yaml")) as f:
-    _help = yaml.load(f)
-
+_help = {
+    "main": {
+        "paths": "List all available paths",
+        "registered-paths": "Print only registered-paths",
+        "verbose": "Display detailed information. Useful for "
+            "debugging purposes.",
+        "plugin-path": "Replace all normally discovered paths "
+            "with this This may be called multiple times.",
+        "add-plugin-path": "Append to normally discovered paths.",
+        "logging-level": "Specify with which level to produce "
+            "logging messages. A value lower than the default "
+                "\"warning\" will produce more messages. This "
+                "can be useful for debugging.",
+        "environment-paths": "Print only paths added via environment",
+        "version": "Print the current version of Pyblish",
+        "plugins": "List all available plugins",
+        "data": "Initialise context with data. This takes "
+            "two arguments, key and value."
+    },
+    "publish": {
+        "delay": "Add an artificial delay to each plugin. Typically used in debugging.",
+        "path": "Input path for publishing operation",
+        "file": "Load file in host registered to it's suffix",
+        "instance": "Only publish specified instance. The default behaviour is to publish all instances. This may be called multiple times."
+    }
+}
 
 def _setup_log(root="pyblish"):
     log = logging.getLogger(root)
@@ -46,10 +64,6 @@ def _setup_log(root="pyblish"):
 
 log = _setup_log()
 main_log = pyblish.lib.setup_log(level=logging.ERROR)
-
-# Constants
-CONFIG_PATH = "config.yaml"
-DATA_PATH = "data.yaml"
 
 PATH_TEMPLATE = "{path} <{typ}>"
 LOG_TEMPATE = "{tab}<log>: %(message)s"
@@ -65,9 +79,6 @@ LOG_LEVEL = {
 }
 
 intro_message = """pyblish version {version}
-
-Custom data @ {data_path}
-Custom configuration @ {config_path}
 
 Available plugin paths:
 {paths}
@@ -97,42 +108,6 @@ def _format_time(start, finish):
     return message.rjust(SCREEN_WIDTH)
 
 
-def _load_data(context):
-    """Inject context with user-supplied data"""
-    try:
-        with open(DATA_PATH) as f:
-            data = yaml.load(f)
-            for key, value in data.iteritems():
-                context.data[key] = value
-
-            return True
-
-    except IOError:
-        pass
-
-    return False
-
-
-def _load_config():
-    """Augment configuration with user-supplied config.yaml"""
-    try:
-        with open(CONFIG_PATH) as f:
-            config = yaml.load(f)
-
-            if config is not None:
-                pyblish.api.config.update(config)
-
-            return True
-
-    except IOError:
-        pass
-
-    except pyblish.vendor.yaml.scanner.ScannerError:
-        raise
-
-    return False
-
-
 @click.group(invoke_without_command=True)
 @click.option("--verbose", is_flag=True, help=_help["main"]["verbose"])
 @click.option("--version", is_flag=True, help=_help["main"]["version"])
@@ -142,8 +117,6 @@ def _load_config():
               help=_help["main"]["registered-paths"])
 @click.option("--environment-paths", is_flag=True,
               help=_help["main"]["environment-paths"])
-@click.option("--configured-paths", is_flag=True,
-              help=_help["main"]["configured-paths"])
 @click.option("-pp",
               "--plugin-path",
               "plugin_paths",
@@ -154,10 +127,6 @@ def _load_config():
               "add_plugin_paths",
               multiple=True,
               help=_help["main"]["add-plugin-path"])
-@click.option("-c",
-              "--config",
-              default=None,
-              help=_help["main"]["config"])
 @click.option("-d",
               "--data",
               nargs=2,
@@ -175,11 +144,9 @@ def main(ctx,
          paths,
          plugins,
          environment_paths,
-         configured_paths,
          registered_paths,
          plugin_paths,
          add_plugin_paths,
-         config,
          data,
          logging_level):
     """Pyblish command-line interface
@@ -216,17 +183,11 @@ def main(ctx,
 
     for key, value in data:
         try:
-            yaml_loaded = yaml.load(value)
-        except Exception as err:
-            log.error("Error: Data must be YAML formatted: "
-                      "--data %s %s" % (key, value))
-            ctx.obj["error"] = err
-        else:
-            context.data[str(key)] = yaml_loaded
-
-    # Load user data
-    data_loaded = _load_data(context)
-    config_loaded = _load_config()
+            value = json.loads(value)
+        except ValueError:
+            pass
+        
+        context.data[str(key)] = value
 
     if not plugin_paths:
         plugin_paths = pyblish.api.plugin_paths()
@@ -242,20 +203,17 @@ def main(ctx,
         click.echo(
             intro_message.format(
                 version=pyblish.__version__,
-                config_path=CONFIG_PATH if config_loaded else "None",
-                data_path=DATA_PATH if data_loaded else "None",
                 paths=_format_paths(plugin_paths),
                 plugins=_format_plugins(available_plugins))
         )
 
     # Visualise available paths
-    if any([paths, environment_paths, registered_paths, configured_paths]):
+    if any([paths, environment_paths, registered_paths]):
         _paths = list()
 
         if paths:
             environment_paths = True
             registered_paths = True
-            configured_paths = True
 
         for path in plugin_paths:
 
@@ -267,14 +225,8 @@ def main(ctx,
             elif path in pyblish.api.registered_paths():
                 _typ = "registered"
 
-            elif path in pyblish.api.configured_paths():
-                _typ = "configured"
-
             # Only display queried paths
             if _typ == "environment" and not environment_paths:
-                continue
-
-            if _typ == "configured" and not configured_paths:
                 continue
 
             if _typ == "registered" and not registered_paths:
@@ -338,7 +290,7 @@ def publish(ctx,
         paths=ctx.obj["plugin_paths"]) if p.active)
     context = pyblish.util.publish(context=context, plugins=plugins)
 
-    if any(result["error"] for result in context.data["results"]):
+    if any(result["error"] for result in context.data.get("results", [])):
         click.echo("There were errors.")
 
         for result in context.data["results"]:
@@ -353,37 +305,4 @@ def publish(ctx,
         click.echo(_format_time(_start, _end))
 
 
-@click.command()
-@click.pass_context
-def config(ctx):
-    """List available config.
-
-    \b
-    Usage:
-        $ pyblish config
-        DEFAULTCONFIG = config.yaml
-        DEFAULTCONFIGPATH = pyblish\config.yaml
-        commit_template = {prefix}/{date}/{family}/{instance}
-        configuration_environment_variable = PYBLISHCONFIGPATH
-        conformers_regex = ^conform_.*\.py$
-        date_format = %Y%m%d_%H%M%S
-        extractors_regex = ^extract_.*\.py$
-        identifier = publishable
-        paths = ["{pyblish}/plugins"]
-        paths_environment_variable = PYBLISHPLUGINPATH
-        prefix = published
-        publish_by_default = True
-        selectors_regex = ^select_.*\.py$
-        validators_regex = ^validate_.*\.py$
-
-    """
-
-    for key, value in sorted(pyblish.api.config.iteritems()):
-        entry = "{k} = {v}".format(
-            tab=TAB, k=key, v=value)
-        entry += " " * (SCREEN_WIDTH - len(entry))
-        click.echo(entry)
-
-
 main.add_command(publish)
-main.add_command(config)

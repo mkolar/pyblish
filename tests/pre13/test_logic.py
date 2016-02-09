@@ -1,11 +1,11 @@
 
 # Local library
-from . import lib
+from .. import lib
 
 import pyblish.plugin
 import pyblish.logic
 
-from pyblish.vendor.nose.tools import (
+from nose.tools import (
     assert_equals,
     assert_true,
     assert_false,
@@ -16,7 +16,6 @@ from pyblish.vendor.nose.tools import (
 @with_setup(lib.setup_empty, lib.teardown)
 def test_process_callables():
     """logic.process can take either data or callables"""
-
     count = {"#": 0}
 
     class SelectInstance(pyblish.api.Selector):

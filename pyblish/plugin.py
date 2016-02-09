@@ -13,11 +13,11 @@ with "validate" and ends with ".py"
 # Standard library
 import os
 import sys
+import time
 import types
 import logging
 import inspect
 import warnings
-import functools
 import contextlib
 
 # Local library
@@ -32,7 +32,6 @@ from . import (
 )
 
 from . import lib
-from .vendor import yaml
 from .vendor import iscompatible
 
 
@@ -95,68 +94,6 @@ class Provider(object):
 
     def inject(self, name, obj):
         self._services[name] = obj
-
-
-class Config(dict):
-    """Wrapper for Pyblish configuration file.
-
-    .. note:: Config is a singleton.
-
-    Attributes:
-        CONFIGPATH: Path to configuration, overridable
-            via environment variable PYBLISHCONFIGPATH.
-
-    Usage:
-        >>> config = Config()
-        >>> for key, value in config.iteritems():
-        ...     assert key in config
-        >>> assert Config() is Config()
-
-    """
-
-    _instance = None
-
-    CONFIGPATH = (os.environ.get("PYBLISHCONFIGPATH") or
-                  os.path.join(os.path.dirname(__file__), "config.yaml"))
-
-    log = logging.getLogger("pyblish.Config")
-
-    def __new__(cls, *args, **kwargs):
-        """Make Config into a singleton"""
-        if cls._instance is None:
-            cls._instance = super(Config, cls).__new__(
-                cls, *args, **kwargs)
-            cls._instance.reset()
-        return cls._instance
-
-    def reset(self):
-        """Remove all configuration and re-read from disk"""
-        self.clear()
-        self.load()
-
-        # Deprecated and undocumented variables
-        self.update({
-            "validators_regex": "^validate_.*\.py$",
-            "extractors_regex": "^extract_.*\.py$",
-            "selectors_regex": "^select_.*\.py$",
-            "conformers_regex": "^conform_.*\.py$",
-            "collectors_regex": "^collect_.*\.py$",
-            "integrators_regex": "^integrate_.*\.py$",
-            "commit_template": "{prefix}/{date}/{family}/{instance}",
-            "publish_by_default": True,
-            "prefix": "published",
-            "identifier": "publishable"
-        })
-
-    def load(self):
-        """Load default configuration from package dir"""
-        with open(self.CONFIGPATH, "r") as f:
-            loaded_data = yaml.load(f)
-
-        for key, value in loaded_data.iteritems():
-            self[key] = value
-
-        return True
 
 
 def evaluate_pre11(plugin):
@@ -340,9 +277,30 @@ class Integrator(Plugin):
     order = 3
 
 
-# Backwards-compatibility aliases
-Selector = Collector
-Conformer = Integrator
+CollectorOrder = 0
+ValidatorOrder = 1
+ExtractorOrder = 2
+IntegratorOrder = 3
+
+
+class ContextPlugin(Plugin):
+    def process(self, context):
+        """Primary processing method
+
+        Arguments:
+            context (Context): Context with which to process
+
+        """
+
+
+class InstancePlugin(Plugin):
+    def process(self, instance):
+        """Primary processing method
+
+        Arguments:
+            instance (Instance): Instance with which to process
+
+        """
 
 
 class MetaAction(type):
@@ -452,7 +410,82 @@ def process(plugin, context, instance=None, action=None):
 
     """
 
-    import time
+    if issubclass(plugin, (ContextPlugin, InstancePlugin)):
+        return __explicit_process(plugin, context, instance, action)
+    else:
+        return __implicit_process(plugin, context, instance, action)
+
+
+def __explicit_process(plugin, context, instance=None, action=None):
+    """Produce result from explicit plug-in
+
+    This is the primary internal mechanism for producing results
+    from the processing of plug-in/instance pairs.
+
+    This mechanism replaces :func:`__implicit_process`.
+
+    """
+
+    assert not (issubclass(plugin, InstancePlugin) and instance is None), (
+        "Cannot process an InstancePlugin without an instance. This is a bug")
+
+    result = {
+        "success": False,
+        "plugin": plugin,
+        "instance": instance,
+        "action": action,
+        "error": None,
+        "records": list(),
+        "duration": None,
+    }
+
+    if not action:
+        runner = plugin().process
+    else:
+        actions = dict((a.id, a) for a in plugin.actions)
+        action = actions[action] if action else None
+        runner = action().process
+
+    records = list()
+    handler = lib.MessageHandler(records)
+
+    __start = time.time()
+
+    try:
+        with logger(handler):
+            runner(context if issubclass(plugin, ContextPlugin) else instance)
+            result["success"] = True
+    except Exception as error:
+        lib.emit("pluginFailed", plugin=plugin, context=context,
+                 instance=instance, error=error)
+        lib.extract_traceback(error)
+        result["error"] = error
+
+    __end = time.time()
+
+    for record in records:
+        result["records"].append(record)
+
+    result["duration"] = (__end - __start) * 1000  # ms
+
+    if "results" not in context.data:
+        context.data["results"] = list()
+
+    context.data["results"].append(result)
+
+    return result
+
+
+def __implicit_process(plugin, context, instance=None, action=None):
+    """Produce result from implicit plug-in
+
+    This is a fallback mechanism for backwards compatibility.
+    An implicit plug-in are those subclassed from Collector,
+    Validator, Extractor or Integrator.
+
+    The mechanism which replaces this is :func:`__explicit_process`.
+
+    """
 
     result = {
         "success": False,
@@ -572,55 +605,11 @@ class _Dict(dict):
         return self.get(key, default)
 
 
-def deprecated(func):
-    """Deprecation decorator
-
-    Attach this to deprecated functions or methods.
-
-    """
-
-    @functools.wraps(func)
-    def wrapper(*args, **kwargs):
-        if sys.version_info >= (2, 7):
-            warnings.warn_explicit(
-                "Call to deprecated function {}.".format(func.__name__),
-                category=DeprecationWarning,
-                filename=func.func_code.co_filename,
-                lineno=func.func_code.co_firstlineno + 1)
-        return func(*args, **kwargs)
-    return wrapper
-
-
 class AbstractEntity(list):
     """Superclass for Context and Instance"""
 
     def __init__(self):
         self.data = _Dict(self)
-
-    @deprecated
-    def add(self, other):
-        """DEPRECATED - USE .append
-
-        Add member to self
-
-        This is to mimic the interface of set()
-
-        """
-
-        return self.append(other)
-
-    @deprecated
-    def remove(self, other):
-        """DEPRECATED - USE .pop
-
-        Remove member from self
-
-        This is to mimic the interface of set()
-
-        """
-
-        index = self.index(other)
-        return self.pop(index)
 
 
 class Context(AbstractEntity):
@@ -690,14 +679,6 @@ class Context(AbstractEntity):
             return next(c for c in self if c.id == key)
         except StopIteration:
             return default
-
-    @deprecated
-    def create_asset(self, *args, **kwargs):
-        return self.create_instance(*args, **kwargs)
-
-    @deprecated
-    def add(self, other):
-        return super(Context, self).append(other)
 
 
 @lib.log
@@ -813,10 +794,13 @@ def deregister_callback(signal, callback):
     Arguments:
         signal (string): Name of signal to deregister the callback with.
         callback (func): Function to execute when a signal is emitted.
+
+    Raises:
+        KeyError on missing signal
+        ValueError on missing callback
     """
 
-    if callback in _registered_callbacks[signal]:
-        _registered_callbacks[signal].remove(callback)
+    _registered_callbacks[signal].remove(callback)
 
 
 def deregister_all_callbacks():
@@ -878,6 +862,7 @@ def deregister_all_plugins():
     _registered_plugins.clear()
 
 
+@lib.deprecated
 def register_service(name, obj):
     """Register a new service
 
@@ -890,6 +875,7 @@ def register_service(name, obj):
     _registered_services[name] = obj
 
 
+@lib.deprecated
 def deregister_service(name):
     """De-register an existing service by name
 
@@ -901,11 +887,13 @@ def deregister_service(name):
     _registered_services.pop(name)
 
 
+@lib.deprecated
 def deregister_all_services():
     """De-register all existing services"""
     _registered_services.clear()
 
 
+@lib.deprecated
 def registered_services():
     """Return the currently registered services as a dictionary
 
@@ -1024,35 +1012,15 @@ def registered_hosts():
     return list(_registered_hosts)
 
 
-def configured_paths():
-    """Return paths added via configuration"""
-    paths = list()
-    config = Config()
-
-    for path_template in config["paths"]:
-        variables = {"pyblish": lib.main_package_path()}
-
-        plugin_path = path_template.format(**variables)
-
-        paths.append(plugin_path)
-
-    return paths
-
-
 def environment_paths():
     """Return paths added via environment variable"""
 
-    paths = list()
-    config = Config()
+    plugin_path = os.environ.get("PYBLISHPLUGINPATH")
+    if not plugin_path:
+        return list()
 
-    env_var = config["paths_environment_variable"]
-    env_val = os.environ.get(env_var)
-    if env_val:
-        env_paths = env_val.split(os.pathsep)
-        for path in env_paths:
-            paths.append(path)
-
-        log.debug("Paths from environment: %s" % env_paths)
+    paths = plugin_path.split(os.pathsep)
+    log.debug("Paths from environment: %s" % paths)
 
     return paths
 
@@ -1067,7 +1035,6 @@ def plugin_paths():
 
     - Registered paths using :func:`register_plugin_path`,
     - Paths from the environment variable `PYBLISHPLUGINPATH`
-    - Paths from configuration
 
     Returns:
         list of paths in which plugins may be locat
@@ -1076,7 +1043,7 @@ def plugin_paths():
 
     paths = list()
 
-    for path in registered_paths() + configured_paths() + environment_paths():
+    for path in registered_paths() + environment_paths():
         if path in paths:
             continue
         paths.append(path)
@@ -1162,13 +1129,13 @@ def discover(type=None, regex=None, paths=None):
 
     # Include plug-ins from registration.
     # Directly registered plug-ins take precedence.
-    for name, plugin in _registered_plugins.iteritems():
+    for name, plugin in _registered_plugins.items():
         if name in plugins:
             log.debug("Duplicate plug-in found: %s", plugin)
             continue
         plugins[name] = plugin
 
-    plugins = plugins.values()
+    plugins = list(plugins.values())
     sort(plugins)  # In-place
 
     return plugins
@@ -1300,60 +1267,8 @@ def sort(plugins):
 
     """
 
+    if not isinstance(plugins, list):
+        raise TypeError("plugins must be of type list")
+
     plugins.sort(key=lambda p: p.order)
     return plugins
-
-
-# Compatibility
-#
-# The below members represent backwards compatibility
-# features, kept separate for maintainability as they
-# will no longer be updated and eventually discarded.
-
-
-def set_data(self, key, value):
-    """DEPRECATED - USE .data DICTIONARY DIRECTLY
-
-    Modify/insert data into entity
-
-    Arguments:
-        key (str): Name of data to add
-        value (object): Value of data to add
-
-    """
-
-    self.data[key] = value
-
-
-def remove_data(self, key):
-    """DEPRECATED - USE .data DICTIONARY DIRECTLY
-
-    Remove data from entity
-
-    Arguments;
-        key (str): Name of data to remove
-
-    """
-
-    self.data.pop(key)
-
-
-def has_data(self, key):
-    """DEPRECATED - USE .data DICTIONARY DIRECTLY
-
-    Check if entity has key
-
-    Arguments:
-        key (str): Key to check
-
-    Return:
-        True if it exists, False otherwise
-
-    """
-
-    return key in self.data
-
-
-AbstractEntity.set_data = set_data
-AbstractEntity.remove_data = remove_data
-AbstractEntity.has_data = has_data
